@@ -1,4 +1,4 @@
-package message
+package protocol
 
 import (
 	"bufio"
@@ -21,9 +21,13 @@ func TestEncodeHostName(t *testing.T) {
 func TestMessageEncodedToHex(t *testing.T) {
 	want := "00160100000100000000000003646e7306676f6f676c6503636f6d0000010001"
 
-	m := New("dns.google.com")
+	req := NewRequest(
+		WithQuestion("dns.google.com", 1, 1),
+		WithRecursionDesired(),
+		WithID(22),
+	)
 
-	got := string(m.EncodeToHex())
+	got := string(req.Encode())
 
 	if want != got {
 		t.Fatalf("want\n%s\ngot\n%s", want, got)
@@ -49,9 +53,13 @@ func TestResponseFirstTwoBytes(t *testing.T) {
 	}
 	rw := bufio.NewReadWriter(bufio.NewReader(conn), bufio.NewWriter(conn))
 
-	msg := New("dns.google.com")
+	req := NewRequest(
+		WithQuestion("dns.google.com", 1, 1),
+		WithRecursionDesired(),
+		WithID(22),
+	)
 
-	msgEncoded := msg.EncodeToHex()
+	msgEncoded := req.Encode()
 	_, err = rw.Write(msgEncoded)
 	if err != nil {
 		fmt.Println("error writing to server: ", err)

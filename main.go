@@ -6,7 +6,7 @@ import (
 	"log"
 	"net"
 
-	"github.com/drkgrkn/dnsresolver/message"
+	"github.com/drkgrkn/dnsresolver/protocol"
 )
 
 func main() {
@@ -26,9 +26,13 @@ func main() {
 	}
 	rw := bufio.NewReadWriter(bufio.NewReader(conn), bufio.NewWriter(conn))
 
-	msg := message.New("dns.google.com")
+	req := protocol.NewRequest(
+		protocol.WithQuestion("dns.google.com", 1, 1),
+		protocol.WithRecursionDesired(),
+		protocol.WithID(22),
+	)
 
-	msgEncoded := msg.EncodeToHex()
+	msgEncoded := req.Encode()
 	_, err = rw.Write(msgEncoded)
 	if err != nil {
 		fmt.Println("error writing to server: ", err)
