@@ -286,7 +286,7 @@ func readAnswer(r io.Reader) (Answer, error) {
 		rdata = rdataBuf
 	} else {
 		return Answer{}, fmt.Errorf(
-			"unsupported record type,class combination, type: %d, class: %d",
+			"unsupported record (type,class) combination, type: %d, class: %d",
 			kind,
 			class,
 		)
