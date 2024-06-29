@@ -3,9 +3,9 @@ package protocol
 import (
 	"bytes"
 	"encoding/binary"
-	"encoding/hex"
 	"fmt"
 	"io"
+	"log"
 	"strings"
 )
 
@@ -21,31 +21,6 @@ func UInt32ToByteSlice(u uint32) []byte {
 }
 
 type Flags uint16
-
-type MessageOptsFunc func(*Message)
-
-func WithID(id uint16) func(*Message) {
-	return func(r *Message) {
-		r.Header.ID = id
-	}
-}
-func WithRecursionDesired() func(*Message) {
-	return func(r *Message) {
-		mask := uint16(0x0100)
-		r.Header.Flags |= mask
-	}
-}
-
-func WithQuestion(name string, qType uint16, qClass uint16) func(*Message) {
-	return func(r *Message) {
-		q := Question{
-			QName:  []byte(EncodeHostName(name)),
-			QType:  qType,
-			QClass: qClass,
-		}
-		r.Questions = append(r.Questions, q)
-	}
-}
 
 type Header struct {
 	ID      uint16
@@ -75,6 +50,31 @@ type Message struct {
 	Header    Header
 	Questions []Question
 	Answers   []Answer
+}
+
+type MessageOptsFunc func(*Message)
+
+func WithID(id uint16) func(*Message) {
+	return func(r *Message) {
+		r.Header.ID = id
+	}
+}
+func WithRecursionDesired() func(*Message) {
+	return func(r *Message) {
+		mask := uint16(0x0100)
+		r.Header.Flags |= mask
+	}
+}
+
+func WithQuestion(name string, qType uint16, qClass uint16) func(*Message) {
+	return func(r *Message) {
+		q := Question{
+			QName:  []byte(encodeHostName(name)),
+			QType:  qType,
+			QClass: qClass,
+		}
+		r.Questions = append(r.Questions, q)
+	}
 }
 
 func NewRequest(opts ...MessageOptsFunc) Message {
@@ -124,43 +124,29 @@ func (m Message) Encode() []byte {
 
 func readHeader(r io.Reader) (Header, error) {
 	// id
-	idHex, err := read(r, 4)
+	idBuf, err := read(r, 2)
 	if err != nil {
 		return Header{}, fmt.Errorf("reading id: %w", err)
-	}
-	idBuf := make([]byte, 2)
-	_, err = hex.Decode(idBuf, idHex)
-	if err != nil {
-		return Header{}, fmt.Errorf("parsing stream hex to id, hex: %v, error: %w", idHex, err)
 	}
 	id := binary.BigEndian.Uint16(idBuf)
 
 	// flags
-	flagsHex, err := read(r, 4)
+	flagsBuf, err := read(r, 2)
+	log.Println(flagsBuf)
 	if err != nil {
 		return Header{}, fmt.Errorf("reading flags: %w", err)
-	}
-	flagsBuf := make([]byte, 2)
-	_, err = hex.Decode(flagsBuf, flagsHex)
-	if err != nil {
-		return Header{}, fmt.Errorf("parsing stream hex to flags, hex: %v, error: %w", flagsHex, err)
 	}
 	flags := binary.BigEndian.Uint16(flagsBuf)
 
 	// counts
-	countsHex, err := read(r, 16)
-	countsBuf := make([]byte, 8)
+	countsBuf, err := read(r, 8)
 	if err != nil {
 		return Header{}, fmt.Errorf("reading counts: %w", err)
 	}
-	_, err = hex.Decode(countsBuf, countsHex)
-	if err != nil {
-		return Header{}, fmt.Errorf("parsing stream hex to counts, hex: %v, error: %w", flagsHex, err)
-	}
-	qdCount := binary.BigEndian.Uint16(countsBuf)
-	anCount := binary.BigEndian.Uint16(countsBuf[2:])
-	nsCount := binary.BigEndian.Uint16(countsBuf[4:])
-	arCount := binary.BigEndian.Uint16(countsBuf[6:])
+	qdCount := binary.BigEndian.Uint16(countsBuf[0:2])
+	anCount := binary.BigEndian.Uint16(countsBuf[2:4])
+	nsCount := binary.BigEndian.Uint16(countsBuf[4:6])
+	arCount := binary.BigEndian.Uint16(countsBuf[6:8])
 	return Header{
 		ID:      id,
 		Flags:   flags,
@@ -230,7 +216,7 @@ func Decode(r io.Reader) (Message, error) {
 		Header:    header,
 		Questions: questions,
 		Answers:   []Answer{},
-	}, err
+	}, nil
 }
 
 func read(r io.Reader, size int) ([]byte, error) {
@@ -253,7 +239,7 @@ func EncodeString(s string) []byte {
 	return dst
 }
 
-func EncodeHostName(hostName string) []byte {
+func encodeHostName(hostName string) []byte {
 	dst := make([]byte, 0)
 	words := strings.Split(hostName, ".")
 
@@ -264,4 +250,14 @@ func EncodeHostName(hostName string) []byte {
 	dst = append(dst, 0)
 
 	return dst
+}
+
+func decodeHostName(b []byte) (string, error) {
+	var sb strings.Builder
+	for i := 0; i < len(b); i++ {
+		//lenLabel := int(b[i])
+
+	}
+
+	return sb.String(), nil
 }
