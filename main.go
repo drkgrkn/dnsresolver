@@ -33,20 +33,23 @@ func main() {
 	)
 
 	msgEncoded := req.Encode()
-	_, err = rw.Write(msgEncoded)
+	n, err := rw.Write(msgEncoded)
 	if err != nil {
-		fmt.Println("error writing to server: ", err)
+		log.Fatal("error writing to server: ", err)
+	}
+	if n != len(msgEncoded) {
+		log.Fatalf("couldnt write entire message, msg len: %d, written len: %d", len(msgEncoded), n)
 	}
 	err = rw.Flush()
+	if err != nil {
+		log.Fatal("error writing to server: ", err)
+	}
 	log.Println("wrote to google")
 
-	recv := make([]byte, 2)
-	_, err = rw.Read(recv)
+	msg, err := protocol.Decode(rw)
 	if err != nil {
-		fmt.Println("error listening to server: ", err)
+		log.Fatalf("error decoding resp: %s", err)
 	}
-	log.Println("read from google")
 
-	fmt.Println(recv)
-	fmt.Printf("%s\n", string(recv))
+	fmt.Println(msg)
 }

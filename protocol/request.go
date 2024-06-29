@@ -1,8 +1,10 @@
 package protocol
 
 import (
+	"bytes"
 	"encoding/binary"
 	"encoding/hex"
+	"fmt"
 	"io"
 	"strings"
 )
@@ -98,30 +100,150 @@ func NewRequest(opts ...MessageOptsFunc) Message {
 
 func (m Message) Encode() []byte {
 	dst := make([]byte, 0)
-	dst = hex.AppendEncode(dst, UInt16ToByteSlice(m.Header.ID))
-	dst = hex.AppendEncode(dst, UInt16ToByteSlice(uint16(m.Header.Flags)))
-	dst = hex.AppendEncode(dst, UInt16ToByteSlice(m.Header.QDCount))
-	dst = hex.AppendEncode(dst, UInt16ToByteSlice(m.Header.ANCount))
-	dst = hex.AppendEncode(dst, UInt16ToByteSlice(m.Header.NSCount))
-	dst = hex.AppendEncode(dst, UInt16ToByteSlice(m.Header.ARCount))
+	dst = append(dst, UInt16ToByteSlice(m.Header.ID)...)
+	dst = append(dst, UInt16ToByteSlice(m.Header.Flags)...)
+	dst = append(dst, UInt16ToByteSlice(m.Header.QDCount)...)
+	dst = append(dst, UInt16ToByteSlice(m.Header.ANCount)...)
+	dst = append(dst, UInt16ToByteSlice(m.Header.NSCount)...)
+	dst = append(dst, UInt16ToByteSlice(m.Header.ARCount)...)
 	for _, q := range m.Questions {
-		dst = hex.AppendEncode(dst, q.QName)
-		dst = hex.AppendEncode(dst, UInt16ToByteSlice(q.QType))
-		dst = hex.AppendEncode(dst, UInt16ToByteSlice(q.QClass))
+		dst = append(dst, q.QName...)
+		dst = append(dst, UInt16ToByteSlice(q.QType)...)
+		dst = append(dst, UInt16ToByteSlice(q.QClass)...)
 	}
 	for _, a := range m.Answers {
-		dst = hex.AppendEncode(dst, a.Name)
-		dst = hex.AppendEncode(dst, UInt16ToByteSlice(a.Type))
-		dst = hex.AppendEncode(dst, UInt16ToByteSlice(a.Class))
-		dst = hex.AppendEncode(dst, UInt32ToByteSlice(a.TTL))
-		dst = hex.AppendEncode(dst, UInt16ToByteSlice(a.RDLength))
-		dst = hex.AppendEncode(dst, a.RData)
+		dst = append(dst, a.Name...)
+		dst = append(dst, UInt16ToByteSlice(a.Type)...)
+		dst = append(dst, UInt16ToByteSlice(a.Class)...)
+		dst = append(dst, UInt32ToByteSlice(a.TTL)...)
+		dst = append(dst, UInt16ToByteSlice(a.RDLength)...)
+		dst = append(dst, a.RData...)
 	}
 	return dst
 }
 
-func Decode(r io.Reader) Message {
-	return Message{}
+func readHeader(r io.Reader) (Header, error) {
+	// id
+	idHex, err := read(r, 4)
+	if err != nil {
+		return Header{}, fmt.Errorf("reading id: %w", err)
+	}
+	idBuf := make([]byte, 2)
+	_, err = hex.Decode(idBuf, idHex)
+	if err != nil {
+		return Header{}, fmt.Errorf("parsing stream hex to id, hex: %v, error: %w", idHex, err)
+	}
+	id := binary.BigEndian.Uint16(idBuf)
+
+	// flags
+	flagsHex, err := read(r, 4)
+	if err != nil {
+		return Header{}, fmt.Errorf("reading flags: %w", err)
+	}
+	flagsBuf := make([]byte, 2)
+	_, err = hex.Decode(flagsBuf, flagsHex)
+	if err != nil {
+		return Header{}, fmt.Errorf("parsing stream hex to flags, hex: %v, error: %w", flagsHex, err)
+	}
+	flags := binary.BigEndian.Uint16(flagsBuf)
+
+	// counts
+	countsHex, err := read(r, 16)
+	countsBuf := make([]byte, 8)
+	if err != nil {
+		return Header{}, fmt.Errorf("reading counts: %w", err)
+	}
+	_, err = hex.Decode(countsBuf, countsHex)
+	if err != nil {
+		return Header{}, fmt.Errorf("parsing stream hex to counts, hex: %v, error: %w", flagsHex, err)
+	}
+	qdCount := binary.BigEndian.Uint16(countsBuf)
+	anCount := binary.BigEndian.Uint16(countsBuf[2:])
+	nsCount := binary.BigEndian.Uint16(countsBuf[4:])
+	arCount := binary.BigEndian.Uint16(countsBuf[6:])
+	return Header{
+		ID:      id,
+		Flags:   flags,
+		QDCount: qdCount,
+		ANCount: anCount,
+		NSCount: nsCount,
+		ARCount: arCount,
+	}, nil
+}
+
+func readQuestion(r io.Reader) (Question, error) {
+	var b bytes.Buffer
+	for {
+		lengthBuf := make([]byte, 1)
+		_, err := r.Read(lengthBuf)
+		if err != nil {
+			return Question{}, err
+		}
+		b.Write(lengthBuf)
+		if lengthBuf[0] == 0 {
+			break
+		}
+		label := make([]byte, lengthBuf[0])
+		_, err = r.Read(label)
+		if err != nil {
+			return Question{}, err
+		}
+		b.Write(label)
+	}
+
+	countsBuf, err := read(r, 4)
+	if err != nil {
+		return Question{}, err
+	}
+	qType := binary.BigEndian.Uint16(countsBuf)
+	qClass := binary.BigEndian.Uint16(countsBuf[2:])
+	return Question{
+		QName:  b.Bytes(),
+		QType:  qType,
+		QClass: qClass,
+	}, nil
+}
+
+func readQuestions(r io.Reader, n int) ([]Question, error) {
+	questions := make([]Question, 0, n)
+	for range n {
+		q, err := readQuestion(r)
+		if err != nil {
+			return questions, err
+		}
+		questions = append(questions, q)
+	}
+
+	return questions, nil
+}
+
+func Decode(r io.Reader) (Message, error) {
+	header, err := readHeader(r)
+	if err != nil {
+		return Message{}, fmt.Errorf("reading header: %w", err)
+	}
+	questions, err := readQuestions(r, int(header.QDCount))
+	if err != nil {
+		return Message{}, fmt.Errorf("reading questions: %w", err)
+	}
+	return Message{
+		Header:    header,
+		Questions: questions,
+		Answers:   []Answer{},
+	}, err
+}
+
+func read(r io.Reader, size int) ([]byte, error) {
+	b := make([]byte, size)
+	n, err := r.Read(b)
+	if err != nil {
+		return b, err
+	}
+	if size != n {
+		return b, fmt.Errorf("not enough bytes read")
+	}
+
+	return b, nil
 }
 
 func EncodeString(s string) []byte {
