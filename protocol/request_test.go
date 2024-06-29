@@ -24,7 +24,7 @@ func TestEncodeHostName(t *testing.T) {
 	want := string(byte(3)) + "dns" + string(byte(6)) + "google" + string(byte(3)) + "com" + string(byte(0))
 	name := "dns.google.com"
 
-	got := string(EncodeHostName(name))
+	got := string(encodeHostName(name))
 	if want != got {
 		t.Fatalf("want: %s, got: %s", want, got)
 	}
