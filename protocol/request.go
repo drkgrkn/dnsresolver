@@ -9,6 +9,28 @@ import (
 	"strings"
 )
 
+const (
+	// record type
+	RecordTypeA       uint16 = 1
+	RecordTypeAAAA    uint16 = 28
+	RecordTypeAFSDB   uint16 = 18
+	RecordTypeAPL     uint16 = 42
+	RecordTypeCAA     uint16 = 257
+	RecordTypeCDNSKEY uint16 = 60
+	RecordTypeCDS     uint16 = 59
+	RecordTypeCERT    uint16 = 37
+	RecordTypeCNAME   uint16 = 5
+	RecordTypeCSYNC   uint16 = 62
+	RecordTypeDHCID   uint16 = 49
+	RecordTypeDLV     uint16 = 32769
+	RecordTypeDNAME   uint16 = 39
+	RecordTypeDNSKEY  uint16 = 48
+	RecordTypeDS      uint16 = 43
+
+	// record class
+	RecordClassIN uint16 = 1
+)
+
 func UInt16ToByteSlice(u uint16) []byte {
 	arr := make([]byte, 2)
 	binary.BigEndian.PutUint16(arr[0:2], u)
@@ -122,6 +144,36 @@ func (m Message) Encode() []byte {
 	return dst
 }
 
+func readName(r io.Reader) (bytes.Buffer, error) {
+	var b bytes.Buffer
+	lengthBuf := make([]byte, 1)
+	for {
+		_, err := r.Read(lengthBuf)
+		if err != nil {
+			return b, err
+		}
+		b.Write(lengthBuf)
+		if lengthBuf[0] >= 0b11000000 {
+			_, err := r.Read(lengthBuf)
+			if err != nil {
+				return b, err
+			}
+			b.Write(lengthBuf)
+			return b, nil
+		}
+		if lengthBuf[0] == 0 {
+			break
+		}
+		label := make([]byte, lengthBuf[0])
+		_, err = r.Read(label)
+		if err != nil {
+			return b, err
+		}
+		b.Write(label)
+	}
+	return b, nil
+}
+
 func readHeader(r io.Reader) (Header, error) {
 	// id
 	idBuf, err := read(r, 2)
@@ -158,25 +210,13 @@ func readHeader(r io.Reader) (Header, error) {
 }
 
 func readQuestion(r io.Reader) (Question, error) {
-	var b bytes.Buffer
-	for {
-		lengthBuf := make([]byte, 1)
-		_, err := r.Read(lengthBuf)
-		if err != nil {
-			return Question{}, err
-		}
-		b.Write(lengthBuf)
-		if lengthBuf[0] == 0 {
-			break
-		}
-		label := make([]byte, lengthBuf[0])
-		_, err = r.Read(label)
-		if err != nil {
-			return Question{}, err
-		}
-		b.Write(label)
+	// qname
+	b, err := readName(r)
+	if err != nil {
+		return Question{}, fmt.Errorf("error reading name: %w", err)
 	}
 
+	// counts
 	countsBuf, err := read(r, 4)
 	if err != nil {
 		return Question{}, err
@@ -203,6 +243,93 @@ func readQuestions(r io.Reader, n int) ([]Question, error) {
 	return questions, nil
 }
 
+func readAnswer(r io.Reader) (Answer, error) {
+	// name
+	log.Println("reading name")
+	b, err := readName(r)
+	if err != nil {
+		return Answer{}, fmt.Errorf("error reading name: %w", err)
+	}
+	log.Println("read name")
+
+	// type
+	log.Println("reading type")
+	kindBuf, err := read(r, 2)
+	if err != nil {
+		return Answer{}, err
+	}
+	kind := binary.BigEndian.Uint16(kindBuf)
+	log.Println("read name")
+
+	// class
+	log.Println("reading type")
+	classBuf, err := read(r, 2)
+	if err != nil {
+		return Answer{}, err
+	}
+	class := binary.BigEndian.Uint16(classBuf)
+	log.Println("read class")
+
+	// ttl
+	log.Println("reading ttl")
+	ttlBuf, err := read(r, 4)
+	if err != nil {
+		return Answer{}, err
+	}
+	ttl := binary.BigEndian.Uint32(ttlBuf)
+	log.Println("read ttl")
+
+	// rdLength
+	log.Println("reading rdLength")
+	rdLengthBuf, err := read(r, 2)
+	if err != nil {
+		return Answer{}, err
+	}
+	rdLength := binary.BigEndian.Uint16(rdLengthBuf)
+	log.Println("read rdLength")
+
+	// rdata
+	log.Println("reading rdata")
+	rdata := make([]byte, 0)
+	if kind == RecordTypeA && class == RecordClassIN {
+		rdataBuf, err := read(r, 4)
+		if err != nil {
+			return Answer{}, fmt.Errorf("parsing rdata: %w", err)
+		}
+		rdata = rdataBuf
+	} else {
+		return Answer{}, fmt.Errorf(
+			"unsupported record type,class combination, type: %d, class: %d",
+			kind,
+			class,
+		)
+	}
+	log.Println("read rdata")
+
+	return Answer{
+		Name:     b.Bytes(),
+		Type:     kind,
+		Class:    class,
+		TTL:      ttl,
+		RDLength: rdLength,
+		RData:    rdata,
+	}, nil
+}
+
+func readAnswers(r io.Reader, n int) ([]Answer, error) {
+	answers := make([]Answer, 0, n)
+	for range n {
+		log.Printf("reading answers in loop #%d\n", len(answers))
+		q, err := readAnswer(r)
+		if err != nil {
+			return answers, err
+		}
+		answers = append(answers, q)
+	}
+
+	return answers, nil
+}
+
 func Decode(r io.Reader) (Message, error) {
 	header, err := readHeader(r)
 	if err != nil {
@@ -212,10 +339,14 @@ func Decode(r io.Reader) (Message, error) {
 	if err != nil {
 		return Message{}, fmt.Errorf("reading questions: %w", err)
 	}
+	answers, err := readAnswers(r, int(header.ANCount))
+	if err != nil {
+		return Message{}, fmt.Errorf("reading answers: %w", err)
+	}
 	return Message{
 		Header:    header,
 		Questions: questions,
-		Answers:   []Answer{},
+		Answers:   answers,
 	}, nil
 }
 
@@ -254,10 +385,23 @@ func encodeHostName(hostName string) []byte {
 
 func decodeHostName(b []byte) (string, error) {
 	var sb strings.Builder
-	for i := 0; i < len(b); i++ {
-		//lenLabel := int(b[i])
-
+	i := 0
+	for {
+		lenLabel := int(b[i])
+		for j := i + 1; j <= i+lenLabel; j++ {
+			if j >= len(b) {
+				return "", fmt.Errorf("given label length is larger than hostname, want to index: %d, hostname length: %d", j, len(b))
+			}
+			sb.WriteByte(b[j])
+		}
+		i += lenLabel + 1
+		if i >= len(b) {
+			return "", fmt.Errorf("index larger than buffer length, index: %d, buffer length: %d", i, len(b))
+		}
+		if b[i] == 0 {
+			break
+		}
+		sb.WriteByte('.')
 	}
-
 	return sb.String(), nil
 }

@@ -2,7 +2,6 @@ package main
 
 import (
 	"bufio"
-	"fmt"
 	"log"
 	"net"
 
@@ -21,6 +20,7 @@ func main() {
 	}
 
 	conn, err := net.DialUDP("udp", nil, addr)
+	defer conn.Close()
 	if err != nil {
 		log.Fatalf("error dialing google")
 	}
@@ -50,6 +50,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("error decoding resp: %s", err)
 	}
+	log.Println("received from google")
 
-	fmt.Println(msg)
+	log.Printf("%+v\n", msg)
 }

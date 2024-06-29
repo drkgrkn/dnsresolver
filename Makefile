@@ -9,5 +9,5 @@ build:
 		-o $(programname) \
 		main.go
 
-run:
+run: build
 	@./$(programname)
