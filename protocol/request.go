@@ -11,21 +11,8 @@ import (
 
 const (
 	// record type
-	RecordTypeA       uint16 = 1
-	RecordTypeAAAA    uint16 = 28
-	RecordTypeAFSDB   uint16 = 18
-	RecordTypeAPL     uint16 = 42
-	RecordTypeCAA     uint16 = 257
-	RecordTypeCDNSKEY uint16 = 60
-	RecordTypeCDS     uint16 = 59
-	RecordTypeCERT    uint16 = 37
-	RecordTypeCNAME   uint16 = 5
-	RecordTypeCSYNC   uint16 = 62
-	RecordTypeDHCID   uint16 = 49
-	RecordTypeDLV     uint16 = 32769
-	RecordTypeDNAME   uint16 = 39
-	RecordTypeDNSKEY  uint16 = 48
-	RecordTypeDS      uint16 = 43
+	RecordTypeA  uint16 = 1
+	RecordTypeNS uint16 = 2
 
 	// record class
 	RecordClassIN uint16 = 1
