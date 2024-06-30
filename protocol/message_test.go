@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -42,9 +43,9 @@ func TestReadHeader(t *testing.T) {
 	inputStream := []byte{}
 	inputStream = append(
 		inputStream,
-		[]byte(toHexUint16(0, 22, 0, 5, 0, 3, 0, 2, 0, 1, 0, 0))...)
+		0, 22, 0, 5, 0, 3, 0, 2, 0, 1, 0, 0)
 
-	got, err := readHeader(bytes.NewReader(inputStream))
+	got, err := parseHeader(bytes.NewReader(inputStream))
 	if err != nil {
 		t.Fatalf("error while reading stream: %s", err)
 	}
@@ -97,7 +98,7 @@ func TestReadQuestion(t *testing.T) {
 		0,
 		1,
 	}
-	got, err := readQuestion(bytes.NewReader(inputStream))
+	got, err := parseQuestion(bytes.NewReader(inputStream))
 	if err != nil {
 		t.Fatalf("error while reading stream: %s", err)
 	}
@@ -175,4 +176,60 @@ func TestResponseFirstTwoBytes(t *testing.T) {
 	if want != got {
 		t.Fatalf("want\n%d\ngot\n%d", want, got)
 	}
+}
+
+func TestGoogleResolvedToCorrect(t *testing.T) {
+	var (
+		ip        = net.IPv4(8, 8, 8, 8)
+		port      = 53
+		dnsServer = "dns.google.com"
+
+		wantFirst  = []byte{8, 8, 8, 8}
+		wantSecond = []byte{8, 8, 4, 4}
+	)
+	addr := &net.UDPAddr{
+		IP:   ip,
+		Port: port,
+		Zone: "",
+	}
+
+	conn, err := net.DialUDP("udp", nil, addr)
+	defer conn.Close()
+	if err != nil {
+		t.Fatalf("error dialing google")
+	}
+	rw := bufio.NewReadWriter(bufio.NewReader(conn), bufio.NewWriter(conn))
+
+	req := NewRequest(
+		WithQuestion(dnsServer, 1, 1),
+		WithRecursionDesired(),
+		WithID(22),
+	)
+
+	msgEncoded := req.Encode()
+	n, err := rw.Write(msgEncoded)
+	if err != nil {
+		t.Fatal("error writing to server: ", err)
+	}
+	if n != len(msgEncoded) {
+		t.Fatalf("couldnt write entire message, msg len: %d, written len: %d", len(msgEncoded), n)
+	}
+	err = rw.Flush()
+	if err != nil {
+		t.Fatal("error writing to server: ", err)
+	}
+
+	msg, err := Parse(rw)
+	if err != nil {
+		t.Fatalf("error decoding resp: %s", err)
+	}
+
+	results := msg.ToMap()[dnsServer]
+	for _, got := range results {
+		if !reflect.DeepEqual(got, wantFirst) && !reflect.DeepEqual(got, wantSecond) {
+			t.Fatalf("expected the dns to resolve to either %v or %v, but got %v", wantFirst, wantSecond, got)
+		}
+
+	}
+
 }

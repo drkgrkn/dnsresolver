@@ -4,7 +4,7 @@ test:
 	@go test -v ./...
 
 build:
-	@go build -v \
+	@go build \
 		-race \
 		-o $(programname) \
 		main.go

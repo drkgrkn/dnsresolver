@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"fmt"
 	"log"
 	"net"
 
@@ -46,11 +47,17 @@ func main() {
 	}
 	log.Println("wrote to google")
 
-	msg, err := protocol.Decode(rw)
+	msg, err := protocol.Parse(rw)
 	if err != nil {
 		log.Fatalf("error decoding resp: %s", err)
 	}
 	log.Println("received from google")
 
-	log.Printf("%+v\n", msg)
+	result := msg.ToMap()
+	for k, v := range result {
+		fmt.Printf("nameserver: %s\n", k)
+		for _, addr := range v {
+			fmt.Printf("  - %v\n", addr)
+		}
+	}
 }
