@@ -1,7 +1,12 @@
 package protocol
 
 import (
+	"bufio"
+	"bytes"
 	"encoding/binary"
+	"fmt"
+	"io"
+	"strings"
 )
 
 const (
@@ -37,40 +42,74 @@ func (h Header) offset() int {
 	return 2 + 2 + 2 + 2 + 2 + 2
 }
 
+func (h Header) WriteTo(w io.Writer) (int64, error) {
+	sum := 0
+	n, err := w.Write(UInt16ToByteSlice(h.ID))
+	sum += n
+	if err != nil {
+		return int64(sum), err
+	}
+	n, err = w.Write(UInt16ToByteSlice(h.Flags))
+	sum += n
+	if err != nil {
+		return int64(sum), err
+	}
+	n, err = w.Write(UInt16ToByteSlice(h.QDCount))
+	sum += n
+	if err != nil {
+		return int64(sum), err
+	}
+	n, err = w.Write(UInt16ToByteSlice(h.ANCount))
+	sum += n
+	if err != nil {
+		return int64(sum), err
+	}
+	n, err = w.Write(UInt16ToByteSlice(h.NSCount))
+	sum += n
+	if err != nil {
+		return int64(sum), err
+	}
+	n, err = w.Write(UInt16ToByteSlice(h.ARCount))
+	sum += n
+	if err != nil {
+		return int64(sum), err
+	}
+
+	return int64(sum), nil
+}
+
 type Question struct {
-	QName  []byte
+	QName  DomainName
 	QType  uint16
 	QClass uint16
 }
 
 func (q Question) offset() int {
-	return len(q.QName) + 2 + 2
+	return q.QName.len() + 2 + 2
 }
 
-type answerName struct {
-	isOffset bool
-	name     []byte
-	offset   uint16
-}
-
-func (an answerName) len() int {
-	if an.isOffset {
-		return 2
-	} else {
-		return len(an.name)
+func (q Question) WriteTo(w io.Writer) (int64, error) {
+	sum := 0
+	n, err := w.Write(q.QName.Bytes())
+	sum += n
+	if err != nil {
+		return int64(sum), err
 	}
-}
-
-func (an answerName) Bytes() []byte {
-	if an.isOffset {
-		return UInt16ToByteSlice(an.offset)
-	} else {
-		return an.name
+	n, err = w.Write(UInt16ToByteSlice(q.QType))
+	sum += n
+	if err != nil {
+		return int64(sum), err
 	}
+	n, err = w.Write(UInt16ToByteSlice(q.QClass))
+	sum += n
+	if err != nil {
+		return int64(sum), err
+	}
+	return int64(sum), nil
 }
 
 type Answer struct {
-	Name     answerName
+	Name     DomainName
 	Type     uint16
 	Class    uint16
 	TTL      uint32
@@ -82,10 +121,61 @@ func (a Answer) offset() int {
 	return a.Name.len() + 2 + 2 + 4 + 2 + len(a.RData)
 }
 
+func (a Answer) Result() string {
+	switch a.Type {
+	case RecordTypeA:
+		return fmt.Sprintf("%d.%d.%d.%d",
+			a.RData[0],
+			a.RData[1],
+			a.RData[2],
+			a.RData[3],
+		)
+	default:
+		return ""
+	}
+}
+
+func (a Answer) WriteTo(w io.Writer) (int64, error) {
+	sum := 0
+	n, err := w.Write(a.Name.Bytes())
+	sum += n
+	if err != nil {
+		return int64(sum), err
+	}
+	n, err = w.Write(UInt16ToByteSlice(a.Type))
+	sum += n
+	if err != nil {
+		return int64(sum), err
+	}
+	n, err = w.Write(UInt16ToByteSlice(a.Class))
+	sum += n
+	if err != nil {
+		return int64(sum), err
+	}
+	n, err = w.Write(UInt32ToByteSlice(a.TTL))
+	sum += n
+	if err != nil {
+		return int64(sum), err
+	}
+	n, err = w.Write(UInt16ToByteSlice(a.RDLength))
+	sum += n
+	if err != nil {
+		return int64(sum), err
+	}
+	n, err = w.Write(a.RData)
+	sum += n
+	if err != nil {
+		return int64(sum), err
+	}
+	return int64(sum), nil
+}
+
 type Message struct {
 	Header    Header
 	Questions []Question
 	Answers   []Answer
+
+	msg []byte
 }
 
 type MessageOptsFunc func(*Message)
@@ -105,7 +195,7 @@ func WithRecursionDesired() func(*Message) {
 func WithQuestion(name string, qType uint16, qClass uint16) func(*Message) {
 	return func(r *Message) {
 		q := Question{
-			QName:  []byte(encodeHostName(name)),
+			QName:  newDomainName(name),
 			QType:  qType,
 			QClass: qClass,
 		}
@@ -113,8 +203,8 @@ func WithQuestion(name string, qType uint16, qClass uint16) func(*Message) {
 	}
 }
 
-func NewRequest(opts ...MessageOptsFunc) Message {
-	r := Message{
+func NewMessage(opts ...MessageOptsFunc) Message {
+	msg := Message{
 		Header: Header{
 			ID:      0,
 			Flags:   0,
@@ -125,67 +215,85 @@ func NewRequest(opts ...MessageOptsFunc) Message {
 		},
 		Questions: []Question{},
 		Answers:   []Answer{},
+
+		msg: []byte{},
 	}
 
 	for _, f := range opts {
-		f(&r)
+		f(&msg)
 	}
 
-	return r
+	msg.msg = msg.encode()
+	return msg
 }
 
-func (m Message) Encode() []byte {
-	dst := make([]byte, 0)
-	dst = append(dst, UInt16ToByteSlice(m.Header.ID)...)
-	dst = append(dst, UInt16ToByteSlice(m.Header.Flags)...)
-	dst = append(dst, UInt16ToByteSlice(m.Header.QDCount)...)
-	dst = append(dst, UInt16ToByteSlice(m.Header.ANCount)...)
-	dst = append(dst, UInt16ToByteSlice(m.Header.NSCount)...)
-	dst = append(dst, UInt16ToByteSlice(m.Header.ARCount)...)
+func (m Message) Bytes() []byte {
+	return m.msg
+}
+
+func (m Message) encode() []byte {
+	var b bytes.Buffer
+	w := bufio.NewWriter(&b)
+	m.Header.WriteTo(w)
 	for _, q := range m.Questions {
-		dst = append(dst, q.QName...)
-		dst = append(dst, UInt16ToByteSlice(q.QType)...)
-		dst = append(dst, UInt16ToByteSlice(q.QClass)...)
+		q.WriteTo(w)
 	}
 	for _, a := range m.Answers {
-		dst = append(dst, a.Name.Bytes()...)
-		dst = append(dst, UInt16ToByteSlice(a.Type)...)
-		dst = append(dst, UInt16ToByteSlice(a.Class)...)
-		dst = append(dst, UInt32ToByteSlice(a.TTL)...)
-		dst = append(dst, UInt16ToByteSlice(a.RDLength)...)
-		dst = append(dst, a.RData...)
+		a.WriteTo(w)
 	}
-	return dst
+	w.Flush()
+	return b.Bytes()
 }
 
-func (m Message) domainAtOffset(offset int) string {
-	cur := 0
-	cur += m.Header.offset()
+func (m Message) labelAtOffset(i int) (DomainName, bool) {
+	curr := m.Header.offset()
 	for _, q := range m.Questions {
-		if cur == offset {
-			name, _ := decodeHostName(q.QName)
-			return name
+		if curr == i {
+			return q.QName, true
 		}
-		cur += q.offset()
+		curr += q.offset()
 	}
 	for _, a := range m.Answers {
-		if cur == offset {
-			name, _ := decodeHostName(a.Name.name)
-			return name
+		if curr == i {
+			return a.Name, true
 		}
-		cur += a.offset()
+		curr += a.offset()
 	}
-	return ""
+
+	return DomainName{}, false
 }
 
-func (m Message) ToMap() map[string][][]byte {
-	mappings := make(map[string][][]byte)
-	for _, ans := range m.Answers {
-		if ans.Name.isOffset {
-			ns := m.domainAtOffset(int(ans.Name.offset))
-			mappings[ns] = append(mappings[ns], ans.RData)
+func (m Message) fullNameOfAnswer(a Answer) string {
+	var sb strings.Builder
+	cur := a.Name
+outer:
+	for {
+		for _, l := range cur.labels {
+			if l.isZero() {
+				break outer
+			}
+			if l.isOffset() {
+				next, _ := m.labelAtOffset(l.offset())
+				cur = next
+				break
+			}
+			sb.WriteString(l.str)
+			sb.WriteByte('.')
+		}
+	}
+	result := sb.String()
+	return result[:len(result)-1]
+}
+
+func (m Message) RecordsOfDomainName(dns string) []string {
+	results := make([]string, 0)
+
+	for _, a := range m.Answers {
+		fullName := m.fullNameOfAnswer(a)
+		if fullName == dns {
+			results = append(results, a.Result())
 		}
 	}
 
-	return mappings
+	return results
 }

@@ -1,7 +1,6 @@
 package protocol
 
 import (
-	"bytes"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -55,36 +54,6 @@ func decodeHostName(b []byte) (string, error) {
 	return sb.String(), nil
 }
 
-func parseName(r io.Reader) (bytes.Buffer, bool, error) {
-	var b bytes.Buffer
-	lengthBuf := make([]byte, 1)
-	for {
-		_, err := r.Read(lengthBuf)
-		if err != nil {
-			return b, false, err
-		}
-		b.Write(lengthBuf)
-		if lengthBuf[0] >= 0b11000000 {
-			_, err := r.Read(lengthBuf)
-			if err != nil {
-				return b, true, err
-			}
-			b.Write(lengthBuf)
-			return b, true, nil
-		}
-		if lengthBuf[0] == 0 {
-			break
-		}
-		label := make([]byte, lengthBuf[0])
-		_, err = r.Read(label)
-		if err != nil {
-			return b, false, err
-		}
-		b.Write(label)
-	}
-	return b, false, nil
-}
-
 func parseHeader(r io.Reader) (Header, error) {
 	// id
 	idBuf, err := read(r, 2)
@@ -121,7 +90,7 @@ func parseHeader(r io.Reader) (Header, error) {
 
 func parseQuestion(r io.Reader) (Question, error) {
 	// qname
-	b, _, err := parseName(r)
+	qName, err := parseDomainName(r)
 	if err != nil {
 		return Question{}, fmt.Errorf("error reading name: %w", err)
 	}
@@ -134,7 +103,7 @@ func parseQuestion(r io.Reader) (Question, error) {
 	qType := binary.BigEndian.Uint16(countsBuf)
 	qClass := binary.BigEndian.Uint16(countsBuf[2:])
 	return Question{
-		QName:  b.Bytes(),
+		QName:  qName,
 		QType:  qType,
 		QClass: qClass,
 	}, nil
@@ -155,23 +124,9 @@ func parseQuestions(r io.Reader, n int) ([]Question, error) {
 
 func parseAnswer(r io.Reader) (Answer, error) {
 	// name
-	b, isOffset, err := parseName(r)
+	domainName, err := parseDomainName(r)
 	if err != nil {
 		return Answer{}, fmt.Errorf("error reading name: %w", err)
-	}
-	var name answerName
-	if isOffset {
-		name = answerName{
-			isOffset: isOffset,
-			name:     []byte{},
-			offset:   binary.BigEndian.Uint16(b.Bytes()) - offsetFlagExcess,
-		}
-	} else {
-		name = answerName{
-			isOffset: isOffset,
-			name:     b.Bytes(),
-			offset:   0,
-		}
 	}
 
 	// type
@@ -205,11 +160,16 @@ func parseAnswer(r io.Reader) (Answer, error) {
 	// rdata
 	rdata := make([]byte, 0)
 	if kind == RecordTypeA && class == RecordClassIN {
+		// A Record
 		rdataBuf, err := read(r, 4)
 		if err != nil {
 			return Answer{}, fmt.Errorf("parsing rdata: %w", err)
 		}
 		rdata = rdataBuf
+
+	} else if kind == RecordTypeNS && class == RecordClassIN {
+		// NS
+		//rdataBuf, _, err := parseName(r)
 	} else {
 		return Answer{}, fmt.Errorf(
 			"unsupported record (type,class) combination, type: %d, class: %d",
@@ -219,7 +179,7 @@ func parseAnswer(r io.Reader) (Answer, error) {
 	}
 
 	return Answer{
-		Name:     name,
+		Name:     domainName,
 		Type:     kind,
 		Class:    class,
 		TTL:      ttl,
@@ -254,11 +214,14 @@ func Parse(r io.Reader) (Message, error) {
 	if err != nil {
 		return Message{}, fmt.Errorf("reading answers: %w", err)
 	}
-	return Message{
+	m := Message{
 		Header:    header,
 		Questions: questions,
 		Answers:   answers,
-	}, nil
+	}
+	m.msg = m.encode()
+
+	return m, nil
 }
 
 func read(r io.Reader, size int) ([]byte, error) {

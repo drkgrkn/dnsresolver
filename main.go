@@ -27,19 +27,18 @@ func main() {
 	}
 	rw := bufio.NewReadWriter(bufio.NewReader(conn), bufio.NewWriter(conn))
 
-	req := protocol.NewRequest(
+	req := protocol.NewMessage(
 		protocol.WithQuestion("dns.google.com", 1, 1),
 		protocol.WithRecursionDesired(),
 		protocol.WithID(22),
 	)
 
-	msgEncoded := req.Encode()
-	n, err := rw.Write(msgEncoded)
+	n, err := rw.Write(req.Bytes())
 	if err != nil {
 		log.Fatal("error writing to server: ", err)
 	}
-	if n != len(msgEncoded) {
-		log.Fatalf("couldnt write entire message, msg len: %d, written len: %d", len(msgEncoded), n)
+	if n != len(req.Bytes()) {
+		log.Fatalf("couldnt write entire message, msg len: %d, written len: %d", len(req.Bytes()), n)
 	}
 	err = rw.Flush()
 	if err != nil {
@@ -47,17 +46,11 @@ func main() {
 	}
 	log.Println("wrote to google")
 
-	msg, err := protocol.Parse(rw)
+	resp, err := protocol.Parse(rw)
 	if err != nil {
 		log.Fatalf("error decoding resp: %s", err)
 	}
 	log.Println("received from google")
 
-	result := msg.ToMap()
-	for k, v := range result {
-		fmt.Printf("nameserver: %s\n", k)
-		for _, addr := range v {
-			fmt.Printf("  - %v\n", addr)
-		}
-	}
+	fmt.Printf("%+v", resp)
 }
