@@ -7,10 +7,6 @@ import (
 	"strings"
 )
 
-const (
-	offsetFlagExcess = 0b11000000 << 8
-)
-
 func encodeString(s string) []byte {
 	dst := make([]byte, 0)
 	dst = append(dst, byte(len(s)))
@@ -122,63 +118,75 @@ func parseQuestions(r io.Reader, n int) ([]Question, error) {
 	return questions, nil
 }
 
-func parseAnswer(r io.Reader) (Answer, error) {
+func parseRecord(r io.Reader) (ResourceRecord, error) {
 	// name
 	domainName, err := parseDomainName(r)
 	if err != nil {
-		return Answer{}, fmt.Errorf("error reading name: %w", err)
+		return ResourceRecord{}, fmt.Errorf("error reading name: %w", err)
 	}
 
 	// type
 	kindBuf, err := read(r, 2)
 	if err != nil {
-		return Answer{}, err
+		return ResourceRecord{}, err
 	}
 	kind := binary.BigEndian.Uint16(kindBuf)
 
 	// class
 	classBuf, err := read(r, 2)
 	if err != nil {
-		return Answer{}, err
+		return ResourceRecord{}, err
 	}
-	class := binary.BigEndian.Uint16(classBuf)
+	class := binary.BigEndian.Uint16(classBuf) % 2
+	if class != RecordClassIN {
+		return ResourceRecord{}, fmt.Errorf("record class should be IN (%d) but got %d", RecordClassIN, class)
+	}
 
 	// ttl
 	ttlBuf, err := read(r, 4)
 	if err != nil {
-		return Answer{}, err
+		return ResourceRecord{}, err
 	}
 	ttl := binary.BigEndian.Uint32(ttlBuf)
 
 	// rdLength
 	rdLengthBuf, err := read(r, 2)
 	if err != nil {
-		return Answer{}, err
+		return ResourceRecord{}, err
 	}
 	rdLength := binary.BigEndian.Uint16(rdLengthBuf)
 
 	// rdata
-	rdata := make([]byte, 0)
-	if kind == RecordTypeA && class == RecordClassIN {
-		// A Record
-		rdataBuf, err := read(r, 4)
+	rdata := DomainName{}
+	switch kind {
+	case RecordTypeA:
+		rdataBuf, err := read(r, int(rdLength)) // rdLength == 4
 		if err != nil {
-			return Answer{}, fmt.Errorf("parsing rdata: %w", err)
+			return ResourceRecord{}, fmt.Errorf("parsing rdata: %w", err)
 		}
-		rdata = rdataBuf
+		rdata = newIPAddress(string(rdataBuf))
+	case RecordTypeNS:
+		rdata, err = parseDomainName(r)
+		if err != nil {
+			return ResourceRecord{}, fmt.Errorf("error reading name: %w", err)
+		}
 
-	} else if kind == RecordTypeNS && class == RecordClassIN {
-		// NS
-		//rdataBuf, _, err := parseName(r)
-	} else {
-		return Answer{}, fmt.Errorf(
+	case RecordTypeAAAA:
+		rdataBuf, err := read(r, int(rdLength)) // rdLength == 16
+		if err != nil {
+			return ResourceRecord{}, fmt.Errorf("parsing rdata: %w", err)
+		}
+		rdata = newDomainName(string(rdataBuf))
+
+	default:
+		return ResourceRecord{}, fmt.Errorf(
 			"unsupported record (type,class) combination, type: %d, class: %d",
 			kind,
 			class,
 		)
 	}
 
-	return Answer{
+	return ResourceRecord{
 		Name:     domainName,
 		Type:     kind,
 		Class:    class,
@@ -188,10 +196,10 @@ func parseAnswer(r io.Reader) (Answer, error) {
 	}, nil
 }
 
-func parseAnswers(r io.Reader, n int) ([]Answer, error) {
-	answers := make([]Answer, 0, n)
+func parseRecords(r io.Reader, n int) ([]ResourceRecord, error) {
+	answers := make([]ResourceRecord, 0, n)
 	for range n {
-		q, err := parseAnswer(r)
+		q, err := parseRecord(r)
 		if err != nil {
 			return answers, err
 		}
@@ -210,14 +218,24 @@ func Parse(r io.Reader) (Message, error) {
 	if err != nil {
 		return Message{}, fmt.Errorf("reading questions: %w", err)
 	}
-	answers, err := parseAnswers(r, int(header.ANCount))
+	answers, err := parseRecords(r, int(header.ANCount))
 	if err != nil {
 		return Message{}, fmt.Errorf("reading answers: %w", err)
 	}
+	auths, err := parseRecords(r, int(header.NSCount))
+	if err != nil {
+		return Message{}, fmt.Errorf("reading authorities: %w", err)
+	}
+	adds, err := parseRecords(r, int(header.ARCount))
+	if err != nil {
+		return Message{}, fmt.Errorf("reading authorities: %w", err)
+	}
 	m := Message{
-		Header:    header,
-		Questions: questions,
-		Answers:   answers,
+		Header:     header,
+		Questions:  questions,
+		Answers:    answers,
+		Authority:  auths,
+		Additional: adds,
 	}
 	m.msg = m.encode()
 

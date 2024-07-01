@@ -20,15 +20,20 @@ func (l Label) isOffset() bool {
 }
 
 func (l Label) offset() int {
-	return int(l.length) - 0b11000000<<8
+	offset := int(l.length - offsetFlagExcess)
+	return offset
 }
 
 func (l Label) len() int {
+	if l.isZero() {
+		return 1
+	}
+
 	if l.isOffset() {
 		return 2
 	}
 
-	return 2 + len(l.str)
+	return 1 + len(l.str)
 }
 
 func (l Label) Bytes() []byte {
@@ -66,6 +71,17 @@ func newDomainName(dn string) DomainName {
 
 	return DomainName{
 		labels: labels,
+	}
+}
+
+func newIPAddress(dn string) DomainName {
+
+	return DomainName{
+		labels: []Label{
+			{
+				length: 4,
+				str:    dn,
+			}},
 	}
 }
 

@@ -4,18 +4,8 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/binary"
-	"fmt"
 	"io"
 	"strings"
-)
-
-const (
-	// record type
-	RecordTypeA  uint16 = 1
-	RecordTypeNS uint16 = 2
-
-	// record class
-	RecordClassIN uint16 = 1
 )
 
 func UInt16ToByteSlice(u uint16) []byte {
@@ -108,34 +98,35 @@ func (q Question) WriteTo(w io.Writer) (int64, error) {
 	return int64(sum), nil
 }
 
-type Answer struct {
+type ResourceRecord struct {
 	Name     DomainName
 	Type     uint16
 	Class    uint16
 	TTL      uint32
 	RDLength uint16
-	RData    []byte
+	RData    DomainName
 }
 
-func (a Answer) offset() int {
-	return a.Name.len() + 2 + 2 + 4 + 2 + len(a.RData)
+func (a ResourceRecord) offsetWithoutRData() int {
+	return a.Name.len() + 2 + 2 + 4 + 2
 }
 
-func (a Answer) Result() string {
+func (a ResourceRecord) offset() int {
+	return a.Name.len() + 2 + 2 + 4 + 2 + int(a.RDLength)
+}
+
+func (a ResourceRecord) formattedRData() string {
 	switch a.Type {
 	case RecordTypeA:
-		return fmt.Sprintf("%d.%d.%d.%d",
-			a.RData[0],
-			a.RData[1],
-			a.RData[2],
-			a.RData[3],
-		)
+		return a.RData.labels[0].str
+	case RecordTypeAAAA:
+		return ""
 	default:
 		return ""
 	}
 }
 
-func (a Answer) WriteTo(w io.Writer) (int64, error) {
+func (a ResourceRecord) WriteTo(w io.Writer) (int64, error) {
 	sum := 0
 	n, err := w.Write(a.Name.Bytes())
 	sum += n
@@ -162,7 +153,7 @@ func (a Answer) WriteTo(w io.Writer) (int64, error) {
 	if err != nil {
 		return int64(sum), err
 	}
-	n, err = w.Write(a.RData)
+	n, err = w.Write(a.RData.Bytes())
 	sum += n
 	if err != nil {
 		return int64(sum), err
@@ -171,9 +162,11 @@ func (a Answer) WriteTo(w io.Writer) (int64, error) {
 }
 
 type Message struct {
-	Header    Header
-	Questions []Question
-	Answers   []Answer
+	Header     Header
+	Questions  []Question
+	Answers    []ResourceRecord
+	Authority  []ResourceRecord
+	Additional []ResourceRecord
 
 	msg []byte
 }
@@ -205,18 +198,12 @@ func WithQuestion(name string, qType uint16, qClass uint16) func(*Message) {
 
 func NewMessage(opts ...MessageOptsFunc) Message {
 	msg := Message{
-		Header: Header{
-			ID:      0,
-			Flags:   0,
-			QDCount: 1,
-			ANCount: 0,
-			NSCount: 0,
-			ARCount: 0,
-		},
-		Questions: []Question{},
-		Answers:   []Answer{},
-
-		msg: []byte{},
+		Header:     Header{ID: 0, Flags: 0, QDCount: 1, ANCount: 0, NSCount: 0, ARCount: 0},
+		Questions:  []Question{},
+		Answers:    []ResourceRecord{},
+		Authority:  []ResourceRecord{},
+		Additional: []ResourceRecord{},
+		msg:        []byte{},
 	}
 
 	for _, f := range opts {
@@ -241,20 +228,62 @@ func (m Message) encode() []byte {
 	for _, a := range m.Answers {
 		a.WriteTo(w)
 	}
+	for _, a := range m.Authority {
+		a.WriteTo(w)
+	}
+	for _, a := range m.Additional {
+		a.WriteTo(w)
+	}
 	w.Flush()
 	return b.Bytes()
 }
 
-func (m Message) labelAtOffset(i int) (DomainName, bool) {
+func (m Message) labelAtOffset(targetOffset int) (DomainName, bool) {
 	curr := m.Header.offset()
 	for _, q := range m.Questions {
-		if curr == i {
+		if curr == targetOffset {
 			return q.QName, true
+		}
+		subCurr := 0
+		for i, l := range q.QName.labels {
+			subCurr += int(l.len())
+			if curr+subCurr == targetOffset {
+				return DomainName{
+					labels: q.QName.labels[i+1:],
+				}, true
+			}
 		}
 		curr += q.offset()
 	}
 	for _, a := range m.Answers {
-		if curr == i {
+		if curr == targetOffset {
+			return a.Name, true
+		}
+		curr += a.offset()
+	}
+	for _, a := range m.Authority {
+		if curr == targetOffset {
+			return a.Name, true
+		}
+		if curr+a.offsetWithoutRData() == targetOffset {
+			return a.RData, true
+		}
+		subCurr := a.offsetWithoutRData()
+		for i, l := range a.RData.labels {
+			if l.isOffset() {
+				break
+			}
+			subCurr += int(l.len())
+			if curr+subCurr == targetOffset {
+				return DomainName{
+					labels: a.RData.labels[i+1:],
+				}, true
+			}
+		}
+		curr += a.offset()
+	}
+	for _, a := range m.Additional {
+		if curr == targetOffset {
 			return a.Name, true
 		}
 		curr += a.offset()
@@ -263,7 +292,7 @@ func (m Message) labelAtOffset(i int) (DomainName, bool) {
 	return DomainName{}, false
 }
 
-func (m Message) fullNameOfAnswer(a Answer) string {
+func (m Message) fullNameOfRecord(a ResourceRecord) string {
 	var sb strings.Builder
 	cur := a.Name
 outer:
@@ -285,13 +314,41 @@ outer:
 	return result[:len(result)-1]
 }
 
-func (m Message) RecordsOfDomainName(dns string) []string {
-	results := make([]string, 0)
+func (m Message) fullRDataOfRecord(a ResourceRecord) string {
+	var sb strings.Builder
+	cur := a.RData
+outer:
+	for {
+		for _, l := range cur.labels {
+			if l.isZero() {
+				break outer
+			}
+			if l.isOffset() {
+				next, _ := m.labelAtOffset(l.offset())
+				cur = next
+				break
+			}
+			sb.WriteString(l.str)
+			sb.WriteByte('.')
+		}
+	}
+	result := sb.String()
+	return result[:len(result)-1]
+}
+
+func (m Message) RecordsOfDomainName(dns string) []ResourceRecord {
+	results := []ResourceRecord{}
 
 	for _, a := range m.Answers {
-		fullName := m.fullNameOfAnswer(a)
+		fullName := m.fullNameOfRecord(a)
 		if fullName == dns {
-			results = append(results, a.Result())
+			results = append(results, a)
+		}
+	}
+	for _, a := range m.Additional {
+		fullName := m.fullNameOfRecord(a)
+		if fullName == dns {
+			results = append(results, a)
 		}
 	}
 
