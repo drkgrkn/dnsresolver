@@ -165,7 +165,14 @@ func parseRecord(r io.Reader) (ResourceRecord, error) {
 			return ResourceRecord{}, fmt.Errorf("parsing rdata: %w", err)
 		}
 		rdata = newIPAddress(string(rdataBuf))
+
 	case RecordTypeNS:
+		rdata, err = parseDomainName(r)
+		if err != nil {
+			return ResourceRecord{}, fmt.Errorf("error reading name: %w", err)
+		}
+
+	case RecordTypeCNAME:
 		rdata, err = parseDomainName(r)
 		if err != nil {
 			return ResourceRecord{}, fmt.Errorf("error reading name: %w", err)

@@ -21,24 +21,6 @@ func toHexUint16(values ...uint16) string {
 	return sb.String()
 }
 
-func writeReqReadResp(rw *bufio.ReadWriter, req Message) (Message, error) {
-	n, err := rw.Write(req.Bytes())
-	if err != nil {
-		return Message{}, err
-	}
-	if n != len(req.Bytes()) {
-		return Message{}, fmt.Errorf("wrote %d bytes but message is %d bytes long", n, len(req.Bytes()))
-	}
-	err = rw.Flush()
-	if err != nil {
-		return Message{}, err
-	}
-
-	resp, err := Parse(rw)
-
-	return resp, nil
-}
-
 func Test_step1(t *testing.T) {
 	want, _ := hex.DecodeString("00160100000100000000000003646e7306676f6f676c6503636f6d0000010001")
 
@@ -131,7 +113,7 @@ func Test_step3(t *testing.T) {
 	records := resp.RecordsOfDomainName(target)
 	got := []string{}
 	for _, rec := range records {
-		ipBuf := rec.formattedRData()
+		ipBuf := resp.formattedRDataOf(rec)
 		got = append(got, fmt.Sprintf("%d.%d.%d.%d",
 			ipBuf[0],
 			ipBuf[1],
@@ -188,14 +170,14 @@ func Test_step4(t *testing.T) {
 			adds := resp.RecordsOfDomainName(fullName)
 			for _, a := range adds {
 				if a.Type == RecordTypeA {
-					ip = net.IP(a.formattedRData())
+					ip = net.IP(resp.formattedRDataOf(a))
 					break
 				}
 			}
 		} else {
 			got := []string{}
 			for _, rec := range results {
-				ipBuf := rec.formattedRData()
+				ipBuf := resp.formattedRDataOf(rec)
 				got = append(got, fmt.Sprintf("%d.%d.%d.%d",
 					ipBuf[0],
 					ipBuf[1],

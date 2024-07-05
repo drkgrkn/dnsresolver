@@ -81,7 +81,12 @@ func newIPAddress(dn string) DomainName {
 			{
 				length: 4,
 				str:    dn,
-			}},
+			},
+			{
+				length: 0,
+				str:    "",
+			},
+		},
 	}
 }
 

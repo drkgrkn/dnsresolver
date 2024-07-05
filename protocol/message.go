@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/binary"
+	"fmt"
 	"io"
 	"strings"
 )
@@ -115,10 +116,12 @@ func (a ResourceRecord) offset() int {
 	return a.Name.len() + 2 + 2 + 4 + 2 + int(a.RDLength)
 }
 
-func (a ResourceRecord) formattedRData() string {
+func (m Message) formattedRDataOf(a ResourceRecord) string {
 	switch a.Type {
 	case RecordTypeA:
 		return a.RData.labels[0].str
+	case RecordTypeCNAME:
+		return m.fullRDataOfRecord(a)
 	case RecordTypeAAAA:
 		return ""
 	default:
@@ -241,23 +244,42 @@ func (m Message) encode() []byte {
 func (m Message) labelAtOffset(targetOffset int) (DomainName, bool) {
 	curr := m.Header.offset()
 	for _, q := range m.Questions {
-		if curr == targetOffset {
-			return q.QName, true
-		}
 		subCurr := 0
 		for i, l := range q.QName.labels {
-			subCurr += int(l.len())
 			if curr+subCurr == targetOffset {
+				lab := q.QName.labels[i:]
 				return DomainName{
-					labels: q.QName.labels[i+1:],
+					labels: lab,
 				}, true
 			}
+			subCurr += int(l.len())
 		}
 		curr += q.offset()
 	}
 	for _, a := range m.Answers {
-		if curr == targetOffset {
-			return a.Name, true
+		subCurr := 0
+		for i, l := range a.Name.labels {
+			if curr+subCurr == targetOffset {
+				return DomainName{
+					labels: a.Name.labels[i:],
+				}, true
+			}
+			subCurr += int(l.len())
+		}
+
+		// no need to check rdata if its an ip
+		if a.Type == RecordTypeA {
+			curr += a.offset()
+			break
+		}
+		subCurr = a.offsetWithoutRData()
+		for i, l := range a.RData.labels {
+			if curr+subCurr == targetOffset {
+				return DomainName{
+					labels: a.RData.labels[i:],
+				}, true
+			}
+			subCurr += int(l.len())
 		}
 		curr += a.offset()
 	}
@@ -316,24 +338,34 @@ outer:
 
 func (m Message) fullRDataOfRecord(a ResourceRecord) string {
 	var sb strings.Builder
-	cur := a.RData
-outer:
-	for {
-		for _, l := range cur.labels {
-			if l.isZero() {
-				break outer
+	if a.Type == RecordTypeA {
+		ipBuf := []byte(a.RData.labels[0].str)
+		return fmt.Sprintf("%d.%d.%d.%d",
+			ipBuf[0],
+			ipBuf[1],
+			ipBuf[2],
+			ipBuf[3],
+		)
+	} else {
+		cur := a.RData
+	outer:
+		for {
+			for _, l := range cur.labels {
+				if l.isZero() {
+					break outer
+				}
+				if l.isOffset() {
+					next, _ := m.labelAtOffset(l.offset())
+					cur = next
+					break
+				}
+				sb.WriteString(l.str)
+				sb.WriteByte('.')
 			}
-			if l.isOffset() {
-				next, _ := m.labelAtOffset(l.offset())
-				cur = next
-				break
-			}
-			sb.WriteString(l.str)
-			sb.WriteByte('.')
 		}
+		result := sb.String()
+		return result[:len(result)-1]
 	}
-	result := sb.String()
-	return result[:len(result)-1]
 }
 
 func (m Message) RecordsOfDomainName(dns string) []ResourceRecord {
